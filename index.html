@@ -16,7 +16,8 @@ main{max-width:1050px;margin:auto;padding:28px 18px 55px}.brand{display:flex;gap
 <h2>🎸 Encuentra los acordes de una canción</h2>
 <p class="hint">Pega el enlace en un analizador compatible para obtener los acordes automáticamente. Después puedes organizar los tiempos en tu espacio de práctica.</p>
 <div class="row"><a class="link" href="https://anychord.net/" target="_blank" rel="noopener">Abrir Anychord</a><a class="link" style="background:#263747;color:#fff;border-color:var(--line)" href="https://song2chord.com/" target="_blank" rel="noopener">Abrir Song2Chord</a></div>
-<p class="hint">La detección automática no está integrada en esta página: estos servicios externos analizan la canción. Acordes Fácil permite practicar y ordenar manualmente la secuencia.</p>
+<div class="row" style="margin-top:14px"><button class="primary" id="autoAnalyze">✨ Analizar acordes automáticamente</button><span id="analysisStatus" class="hint" role="status">Pega primero un enlace de YouTube y pulsa analizar.</span></div>
+<p class="hint">El análisis puede tardar un poco. Depende de que el vídeo sea accesible para el servicio externo.</p>
 </section>
 <div class="grid">
 <section class="card">
@@ -46,6 +47,67 @@ const $=id=>document.getElementById(id),notes=["C","C#","D","D#","E","F","F#","G
 const names={Em:"Mi menor",G:"Sol mayor",D:"Re mayor",C:"Do mayor",Am:"La menor",E:"Mi mayor",A:"La mayor",F:"Fa mayor",Bm:"Si menor",Dm:"Re menor","F#m":"Fa sostenido menor",B7:"Si séptima"};
 let data=[{t:0,c:"Em"},{t:4,c:"C"},{t:8,c:"G"},{t:12,c:"D"}],idx=0,shift=0,timer=null,playing=false,start=0,elapsed=0,ytPlayer=null,ytReady=false;
 function tr(c,n){let m=c.match(/^([A-G]#?)(.*)$/);if(!m)return c;return notes[(notes.indexOf(m[1])+n%12+12)%12]+m[2]}
+
+const ANALYSIS_API="https://broken-waterfall-60b3.rafaelcheca.workers.dev";
+function setAnalysisStatus(msg){$("analysisStatus").textContent=msg}
+function findChordRows(root){
+  const candidates=[],seen=new Set();
+  function walk(v){
+    if(!v||typeof v!=="object"||seen.has(v))return;seen.add(v);
+    if(Array.isArray(v)){
+      if(v.length&&v.some(x=>x&&typeof x==="object"&&("chord"in x||"symbol"in x||"label"in x||"name"in x)))candidates.push(v);
+      v.forEach(walk);return;
+    }
+    Object.values(v).forEach(walk);
+  }
+  walk(root);
+  for(const arr of candidates){
+    const rows=arr.map(x=>{
+      const chord=x.chord??x.symbol??x.label??x.name;
+      let t=x.start??x.start_time??x.time??x.timestamp??x.t??x.offset??0;
+      if(typeof t==="string")t=Number(t.replace("s",""));
+      t=Number(t);if(!Number.isFinite(t))t=0;if(t>10000)t/=1000;
+      return {t:Math.max(0,t),c:String(chord||"").trim()};
+    }).filter(x=>x.c&&/^[A-G](?:#|b)?(?:m|min|maj|dim|aug|sus|add|[0-9]|\\(|$)/i.test(x.c));
+    if(rows.length>=2)return rows.sort((a,b)=>a.t-b.t);
+  }
+  return [];
+}
+async function analyzeAutomatically(){
+  const song=$("yt").value.trim();
+  if(!/(youtu\\.be\\/|youtube\\.com\\/)/i.test(song)){setAnalysisStatus("Pega primero un enlace válido de YouTube.");return}
+  const btn=$("autoAnalyze");btn.disabled=true;setAnalysisStatus("Enviando canción al analizador…");
+  try{
+    const submitted=await fetch(ANALYSIS_API+"/api/analyze",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({url:song})});
+    const job=await submitted.json();
+    if(!submitted.ok)throw new Error(job.error||("El servicio respondió "+submitted.status));
+    if(!job.job_id)throw new Error("El servicio no devolvió un identificador de análisis.");
+    setAnalysisStatus("Analizando la canción… puede tardar hasta un minuto.");
+    let statusData=null;
+    for(let i=0;i<45;i++){
+      await new Promise(resolve=>setTimeout(resolve,2000));
+      const poll=await fetch(ANALYSIS_API+"/api/jobs/"+encodeURIComponent(job.job_id));
+      statusData=await poll.json();
+      if(!poll.ok)throw new Error(statusData.error||("Error consultando el análisis: "+poll.status));
+      const state=String(statusData.status||statusData.state||"").toLowerCase();
+      if(["complete","completed","succeeded","success","done"].includes(state))break;
+      if(["failed","error","cancelled","canceled"].includes(state))throw new Error(statusData.error||statusData.message||"El análisis no se pudo completar.");
+      if(i===44)throw new Error("El análisis sigue en proceso. Inténtalo de nuevo dentro de un minuto.");
+    }
+    setAnalysisStatus("Recibiendo los acordes…");
+    const resultResponse=await fetch(ANALYSIS_API+"/api/jobs/"+encodeURIComponent(job.job_id)+"/result");
+    const result=await resultResponse.json();
+    if(!resultResponse.ok)throw new Error(result.error||("No se pudo leer el resultado: "+resultResponse.status));
+    const rows=findChordRows(result);
+    if(!rows.length){
+      setAnalysisStatus("El análisis terminó, pero el formato de acordes necesita adaptación. No se han inventado acordes.");
+      console.log("Magic Chords result:",result);return;
+    }
+    data=rows;idx=0;save();render();
+    setAnalysisStatus("¡Análisis terminado! Se han cargado "+rows.length+" cambios de acorde.");
+  }catch(err){setAnalysisStatus("No se pudo analizar: "+err.message)}
+  finally{btn.disabled=false}
+}
 function show(){if(!data.length){$("big").textContent="—";$("name").textContent="Añade un acorde";return}let x=data[idx];$("big").textContent=tr(x.c,shift);$("name").textContent=names[x.c]||"Acorde";$("at").value=x.t;[...$("timeline").children].forEach((e,i)=>e.classList.toggle("active",i===idx))}
 function seekToIndex(){if(ytReady&&ytPlayer&&data[idx])ytPlayer.seekTo(data[idx].t,true)}
 function render(){data.sort((a,b)=>a.t-b.t);$("timeline").innerHTML="";$("entries").innerHTML="";data.forEach((x,i)=>{let b=document.createElement("button");b.className="chord";b.innerHTML="<b>"+tr(x.c,shift)+"</b><small>"+x.t+" s</small>";b.onclick=()=>{idx=i;show();seekToIndex()};$("timeline").append(b);let d=document.createElement("div");d.className="item";let s=document.createElement("span");s.textContent=x.t+" s — "+tr(x.c,shift);let del=document.createElement("button");del.textContent="Eliminar";del.onclick=()=>{data.splice(i,1);idx=Math.max(0,Math.min(idx,data.length-1));save();render()};d.append(s,del);$("entries").append(d)});show()}
@@ -56,6 +118,7 @@ function showVideoFallback(message){ytReady=false;ytPlayer=null;$("player").inne
 window.onYouTubeIframeAPIReady=function(){if(!window.pendingVideoId)return;ytPlayer=new YT.Player("ytplayer",{videoId:window.pendingVideoId,playerVars:{rel:0,playsinline:1},events:{onReady:function(){ytReady=true;ytPlayer.setPlaybackRate(Number($("speed").value));$("playerStatus").textContent="Vídeo listo. Los acordes seguirán su reproducción."},onError:function(e){let msg=e.data===101||e.data===150?"Este vídeo no permite reproducción incrustada. Prueba otro vídeo de YouTube.":"YouTube no ha podido cargar este vídeo (error "+e.data+").";$("playerStatus").textContent=msg},onStateChange:function(e){if(e.data===YT.PlayerState.PLAYING){playing=true;$("play").textContent="Ⅱ Pausar";if(!timer)timer=setInterval(tick,120)}else if(e.data===YT.PlayerState.PAUSED||e.data===YT.PlayerState.ENDED){playing=false;clearInterval(timer);timer=null;$("play").textContent="▶ Reproducir vídeo"}}}})};
 function loadYouTubeApi(){if(window.YT&&window.YT.Player){window.onYouTubeIframeAPIReady();return}if(!document.getElementById("youtube-api")){let s=document.createElement("script");s.id="youtube-api";s.src="https://www.youtube.com/iframe_api";s.onerror=()=>showVideoFallback("No se pudo cargar el reproductor sincronizado. Se ha abierto el vídeo en modo normal.");document.head.appendChild(s)}setTimeout(()=>{if(!ytReady&&!window.YT?.Player&&window.pendingVideoId)showVideoFallback("Se ha abierto el vídeo en modo normal. La sincronización no está disponible.");},8000)}
 $("load").onclick=()=>{let v=$("yt").value.trim(),m=v.match(/(?:youtu\.be\/|youtube\.com\/(?:watch\?v=|embed\/|shorts\/))([A-Za-z0-9_-]{11})/);if(!m){$("player").textContent="No reconozco ese enlace. Pega una URL normal de YouTube.";return}stop();ytReady=false;window.pendingVideoId=m[1];$("player").innerHTML='<div id="ytplayer" style="width:100%;height:100%;min-height:220px"></div>';let status=document.getElementById("playerStatus");if(!status){status=document.createElement("div");status.id="playerStatus";status.className="hint";$("player").after(status)}status.textContent="Cargando reproductor…";loadYouTubeApi()};
+$("autoAnalyze").onclick=analyzeAutomatically;
 $("add").onclick=()=>{data.push({t:Math.max(0,Number($("at").value)||0),c:$("chord").value});idx=data.length-1;save();render()};
 $("sample").onclick=()=>{data=[{t:0,c:"Em"},{t:4,c:"C"},{t:8,c:"G"},{t:12,c:"D"},{t:16,c:"Em"}];idx=0;save();render()};
 $("clear").onclick=()=>{stop();data=[];save();render()};
