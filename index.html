@@ -75,7 +75,7 @@ function findChordRows(root){
 }
 async function analyzeAutomatically(){
   const song=$("yt").value.trim();
-  const videoMatch=song.match(/(?:youtu\\.be\\/|youtube\\.com\\/(?:watch\\?v=|embed\\/|shorts\\/))([A-Za-z0-9_-]{11})/);if(!videoMatch){setAnalysisStatus("Pega primero un enlace válido de YouTube.");return}if(window.pendingVideoId!==videoMatch[1])$("load").click();
+  const videoMatch=song.match(/(?:youtu\.be\/|youtube\.com\/(?:watch\?v=|embed\/|shorts\/))([A-Za-z0-9_-]{11})/);if(!videoMatch){setAnalysisStatus("Pega primero un enlace válido de YouTube.");return}if(window.pendingVideoId!==videoMatch[1])$("load").click();
   const btn=$("autoAnalyze");btn.disabled=true;setAnalysisStatus("Enviando canción al analizador…");
   try{
     const submitted=await fetch(ANALYSIS_API+"/api/analyze",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({url:song})});
